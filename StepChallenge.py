@@ -1,101 +1,166 @@
 #!/usr/bin/env python
 # coding: utf-8
+"""
+Process Google Forms results into useful data products.
 
+First, create a corrected snapshot of the data.
+Names are stripped on extra spaces, and capitalization is cannonicised.
+
+Then, sub-sheets are created for each Peaker group represented.
+"""
+
+import argparse
 import collections
 import os
 import pickle
 import sys
 import time
 
-# The Link to the spreadsheet to read data from.
-SOURCE_SPREADSHEET = '1spfXPQgzg3UTTPtdKMelvbwYWVHuNFD4FWXdU5rc8vI'
-
-# Link to source spreadsheet: https://docs.google.com/spreadsheets/d/1spfXPQgzg3UTTPtdKMelvbwYWVHuNFD4FWXdU5rc8vI/edit?ts=5d706fab#gid=2032000625
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-
-# Values provided by Google to access Sheets, from https://developers.google.com/sheets/api/quickstart/python
-GoogleClientId = '773119053209-itk2e217v35j2c9covjrobv5kqs1qg1p.apps.googleusercontent.com'
-ClientSecret = 'Qo7CSJjEOdNUaszEg3Nc3AX_'
-
 # Needed tools:
 from googleapiclient.discovery import build
 from httplib2 import Http
 from oauth2client import file, client, tools
 
-# The file token.json stores the user's access and refresh tokens, and is
-# created automatically when the authorization flow completes for the first
-# time.
-print("Connecting...")
-store = file.Storage('token.json')
-creds = store.get()
-if not creds or creds.invalid:
-    flow = client.flow_from_clientsecrets('credentials.json', SCOPES)
-    creds = tools.run_flow(flow, store)
-
-service = build('sheets', 'v4', http=creds.authorize(Http()))
-
-# Call the Sheets API
-sheet = service.spreadsheets()
-result = sheet.values().get(spreadsheetId=SOURCE_SPREADSHEET, range='A:F').execute()
-peaker_data = result.get('values', [])
-columns = ['timestamp', 'Name', 'Group', 'Day of Month', 'Footsteps', 'Litter']
-
-print("Number of entries: {}".format(len(peaker_data)))
-
-# print(peaker_data[0])
-
-GroupSheets = {}
-if os.path.exists('group_sheets.pickle'):
-    GroupSheets = pickle.load( open('group_sheets.pickle', 'rb'))
+# The Link to the spreadsheet to read data from.
+SOURCE_SPREADSHEET = '1spfXPQgzg3UTTPtdKMelvbwYWVHuNFD4FWXdU5rc8vI'
+# The link to the corrected data spreadsheet
+CORRECTED_SPREADSHEET = '1SYjohmGJklzQP5pQXdWKawK26HLavKxruoPs4L8kMe0'
 
 
-kFlushCount = 100
+class Sheets:
+    """
+    Methods to talk to Google Sheets
+    """
+    SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+    def __init__(self):
+        # The file token.json stores the user's access and refresh tokens, and is
+        # created automatically when the authorization flow completes for the first
+        # time.
+        print("Connecting...")
+        store = file.Storage('token.json')
+        creds = store.get()
+        if not creds or creds.invalid:
+            flow = client.flow_from_clientsecrets('credentials.json', SCOPES)
+            creds = tools.run_flow(flow, store)
 
-def one():
-    return 1
+        service = build('sheets', 'v4', http=creds.authorize(Http()))
+
+        # Call the Sheets API
+        self.sheet = service.spreadsheets()
+        print("...connected")
+
+    def get_data(self, source, range):
+        return self.sheet.values().get(spreadsheetId=source, range=range).execute().get('values', [])
+
+    def write_data(self, dest, data):
+        columns = len(data[0])
+        request = self.sheet.values().update(
+            spreadsheetId=dest, range='Sheet1!A:{}'.format(chr(ord('A') + columns - 1)),
+            valueInputOption="USER_ENTERED",
+            body={'values': data})
+        resp = request.execute()
+        time.sleep(1.5)
+    
+    def write_cell(self, dest, cell, data):
+        request = self.sheet.values().update(
+            spreadsheetId=dest, range='Sheet1!' + cell, valueInputOption="USER_ENTERED",
+            body={'values': [[data]]})
+        resp = request.execute()
+        time.sleep(1.5)
+
+    def make_new_sheet(self, name):
+        spreadsheet_body = {'properties': {'title': name}}
+        request = self.sheet.create(body=spreadsheet_body)
+        response = request.execute()
+        print("New Sheet {}: {}".format(name, response['spreadsheetUrl']))
+        return response
 
 
-CurrentLine = collections.defaultdict(one)
+
+class GroupSplitter:
+    PickleFile = 'group_sheets.pickle'
+    def __init__(self):
+        self.group_sheets = {}
+        if os.path.exists(GroupSplitter.PickleFile):
+            with open(GroupSplitter.PickleFile, 'rb') as f:
+                self.group_sheets = pickle.load(f)
+
+    def save_groups(self):
+        with open(GroupSplitter.PickleFile, 'wb') as f:
+            pickle.dump(self.group_sheets, f)
+
+    def split(self, sheets, data, time_of_data):
+        def header_line():
+            return [data[0]]
+
+        group_data = collections.defaultdict(header_line)
+
+        for entry in data[1:]:
+            group = entry[2]
+            if not group in self.group_sheets:
+                self.group_sheets[group] = sheets.make_new_sheet(group)
+            dest = self.group_sheets[group]
+            group_data[group].append(entry)
+
+        for group in group_data:
+            # Add a blank line to make
+            group_data[group].append(['','','','','',''])
+            ret = sheets.write_data(self.group_sheets[group]['spreadsheetId'], group_data[group])
+            sheets.write_cell(self.group_sheets[group]['spreadsheetId'], 'H1', time_of_data)
+            print("wrote {}".format(group))
 
 
-def header_line():
-    return [peaker_data[0]]
+def canonicise_name(n):
+    # First, strip spaces.
+    n = n.strip()
+    # Split into words
+    words = n.split()
+    # Return each word capitalized, separated by one space.
+    return ' '.join([x.capitalize() for x in words])
 
 
-Buffer = collections.defaultdict(header_line)
+def sheet_to_alias_table(alias_data):
+    ret = {}
+    for entry in alias_data:
+        if entry and entry[0]:
+            ret[canonicise_name(entry[0])] = entry[1]
+    return ret
 
 
-def make_new_sheet(name):
-    folder = "PeakerStepChallenge"
-    spreadsheet_body = {'properties': {'title': name}}
-    request = sheet.create(body=spreadsheet_body)
-    response = request.execute()
-    print("New Sheet {}: {}".format(name, response['spreadsheetUrl']))
-    return response
+def correct_data(raw_data, aliases, count=None):
+    if count is None:
+        count = len(raw_data)
+    ret = []
+    for index in range(count):
+        corrected_entry = raw_data[index]
+        name = canonicise_name(corrected_entry[1])
+        # Deal with aliases
+        corrected_entry[1] = aliases.get(name, name)
+        ret.append(corrected_entry)
+    return ret
 
 
-for entry in peaker_data[1:]:
-    group = entry[2]
-    if not group in GroupSheets:
-        GroupSheets[group] = make_new_sheet(group)
-    dest = GroupSheets[group]
-    Buffer[group].append(entry)
-    if len(Buffer[group]) >= kFlushCount:
-        print("Writing to {} at {}".format(group, CurrentLine[group]))
-        sheet.values().update(spreadsheetId=dest['spreadsheetId'], range='Sheet1!A{}:F{}'.format(CurrentLine[group],
-        CurrentLine[group] + len(Buffer[group]) - 1), valueInputOption="USER_ENTERED", body={'values': Buffer[group]}).execute()
-        CurrentLine[group] += len(Buffer[group])
-        Buffer[group] = list()
-        time.sleep(1)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(__doc__)
+    parser.add_argument('-c', '--count', type=int, help='How many rows to process')
 
-print("Final Flush:")
-for group in Buffer:
-    if Buffer[group]:
-        print("Writing to {} at {} up to {}".format(group, CurrentLine[group], CurrentLine[group] + len(Buffer[group])))
-        ret = sheet.values().update(spreadsheetId=GroupSheets[group]['spreadsheetId'], range='Sheet1!A{}:F{}'.format(CurrentLine[group],
-        CurrentLine[group] + len(Buffer[group]) - 1), valueInputOption="USER_ENTERED", body={'values': Buffer[group]}).execute()
-        CurrentLine[group] += len(Buffer[group])
-        Buffer[group] = list()
-        time.sleep(1)
+    options = parser.parse_args()
 
-pickle.dump(GroupSheets, open('group_sheets.pickle', 'wb'))
+    sheets = Sheets()
+    raw_peaker_data = sheets.get_data(SOURCE_SPREADSHEET, "Form Responses 1!A:F")
+    time_of_data = time.asctime()
+    print("Got data at {}".format(time_of_data))
+    alias_table = sheet_to_alias_table(sheets.get_data(SOURCE_SPREADSHEET, "Aliases!A:B"))
+    
+    corrected_data = correct_data(raw_peaker_data, alias_table, options.count)
+    print("Corrected {} lines of data".format(len(corrected_data)))
+
+    sheets.write_data(CORRECTED_SPREADSHEET, corrected_data)
+    sheets.write_cell(CORRECTED_SPREADSHEET, 'H1', time_of_data)
+
+    splitter = GroupSplitter()
+    splitter.split(sheets, corrected_data, time_of_data)
+    splitter.save_groups()
+
+    print()
+    print("Finished writing data for {} entries".format(len(corrected_data)))
