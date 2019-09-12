@@ -59,7 +59,7 @@ class Sheets:
             valueInputOption="USER_ENTERED",
             body={'values': data})
         resp = request.execute()
-        time.sleep(1.5)
+        time.sleep(3.0)
     
     def write_cell(self, dest, cell, data):
         request = self.sheet.values().update(
@@ -79,8 +79,9 @@ class Sheets:
 
 class GroupSplitter:
     PickleFile = 'group_sheets.pickle'
-    def __init__(self):
+    def __init__(self, groups):
         self.group_sheets = {}
+        self.desired_groups = groups
         if os.path.exists(GroupSplitter.PickleFile):
             with open(GroupSplitter.PickleFile, 'rb') as f:
                 self.group_sheets = pickle.load(f)
@@ -105,9 +106,10 @@ class GroupSplitter:
         for group in group_data:
             # Add a blank line to make
             group_data[group].append(['','','','','',''])
-            ret = sheets.write_data(self.group_sheets[group]['spreadsheetId'], group_data[group])
-            sheets.write_cell(self.group_sheets[group]['spreadsheetId'], 'H1', time_of_data)
-            print("wrote {}".format(group))
+            if not self.desired_groups or group in self.desired_groups:
+                ret = sheets.write_data(self.group_sheets[group]['spreadsheetId'], group_data[group])
+                sheets.write_cell(self.group_sheets[group]['spreadsheetId'], 'H1', time_of_data)
+                print("wrote {}".format(group))
 
 
 def canonicise_name(n):
@@ -131,8 +133,15 @@ def correct_data(raw_data, aliases, count=None):
     if count is None:
         count = len(raw_data)
     ret = []
+    already_seen = set()
     for index in range(count):
         corrected_entry = raw_data[index]
+        # Check for Dups BEFORE canonicalization.
+        # If they differ, they aren't the dup.
+        sans_timestamp = ','.join(corrected_entry[1:])
+        if sans_timestamp in already_seen:
+            continue
+        already_seen.add(sans_timestamp)
         name = canonicise_name(corrected_entry[1])
         # Deal with aliases
         corrected_entry[1] = aliases.get(name, name)
@@ -143,6 +152,7 @@ def correct_data(raw_data, aliases, count=None):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(__doc__)
     parser.add_argument('-c', '--count', type=int, help='How many rows to process')
+    parser.add_argument('-g', '--group', action='append', dest='groups', default=[])
 
     options = parser.parse_args()
 
@@ -158,7 +168,7 @@ if __name__ == '__main__':
     sheets.write_data(CORRECTED_SPREADSHEET, corrected_data)
     sheets.write_cell(CORRECTED_SPREADSHEET, 'H1', time_of_data)
 
-    splitter = GroupSplitter()
+    splitter = GroupSplitter(options.groups)
     splitter.split(sheets, corrected_data, time_of_data)
     splitter.save_groups()
 
