@@ -66,7 +66,7 @@ class Sheets:
             spreadsheetId=dest, range='Sheet1!' + cell, valueInputOption="USER_ENTERED",
             body={'values': [[data]]})
         resp = request.execute()
-        time.sleep(1.5)
+        time.sleep(2.0)
 
     def make_new_sheet(self, name):
         spreadsheet_body = {'properties': {'title': name}}
@@ -96,20 +96,26 @@ class GroupSplitter:
 
         group_data = collections.defaultdict(header_line)
 
+        print("sorting...")
         for entry in data[1:]:
             group = entry[2]
             if not group in self.group_sheets:
                 self.group_sheets[group] = sheets.make_new_sheet(group)
             dest = self.group_sheets[group]
             group_data[group].append(entry)
+        print("...sorted")
 
+        count = 1
+        max_count = len(self.desired_groups) if self.desired_groups else len(group_data)
         for group in group_data:
             # Add a blank line to make
             group_data[group].append(['','','','','',''])
             if not self.desired_groups or group in self.desired_groups:
                 ret = sheets.write_data(self.group_sheets[group]['spreadsheetId'], group_data[group])
                 sheets.write_cell(self.group_sheets[group]['spreadsheetId'], 'H1', time_of_data)
-                print("wrote {}".format(group))
+                print("wrote {} ({}/{})".format(group, count, max_count))
+                count += 1
+
 
 
 def canonicise_name(n):

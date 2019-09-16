@@ -96,14 +96,24 @@ if __name__ == '__main__':
         raw_peaker_data = raw_peaker_data[1:]
     
     already_seen = set()
+    double_counters = {}
     line_number = 0
     count = 0
+    double_counters_count = 0
     for entry in raw_peaker_data:
         line_number += 1
+        as_duplicate = False
         subset = ','.join(entry[1:])   # The parts that matter.
         if subset in already_seen:
-            print("Possible duplicate at line {}: {}".format(line_number, subset))
+            # print("Possible duplicate at line {}: {}".format(line_number, subset))
             count += 1
+            as_duplicate = True
         else:
             already_seen.add(subset)
+        subset2 = ','.join([entry[1]] + entry[3:])
+        if subset2 in double_counters and not as_duplicate:
+            print("Double counting at line {}: {}".format(line_number, double_counters[subset2]))
+            double_counters_count += 1
+        else:
+            double_counters[subset2] = "line {}: {}".format(line_number, subset)
     print("Saw {} possible duplicates".format(count))
